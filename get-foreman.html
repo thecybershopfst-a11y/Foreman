@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Get Foreman — Your Own Business OS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#12161C; --canvas:#EEF1F0; --panel:#FFFFFF;
+    --amber:#AD7A2E; --amber-dim:#F1E4CC; --line:#D7DCDD; --text-dim:#5B6670;
+    --serif:"Archivo",sans-serif; --sans:"Inter",-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--canvas);color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:640px;margin:0 auto;padding:60px 20px 80px;}
+  .wordmark{font-family:var(--serif);font-weight:800;font-size:1.4rem;color:var(--ink);}
+  h1{font-family:var(--serif);font-weight:800;font-size:2.1rem;line-height:1.15;margin:24px 0 14px;letter-spacing:-.01em;}
+  p.lead{font-size:1.05rem;color:var(--text-dim);line-height:1.6;margin-bottom:32px;}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:32px;margin-bottom:24px;}
+  .deploy-btn img{display:block;height:44px;}
+  .deploy-btn{display:inline-block;margin-bottom:18px;}
+  ul.steps{margin:0;padding-left:20px;font-size:.95rem;line-height:1.9;color:var(--ink);}
+  .fine{font-size:.82rem;color:var(--text-dim);margin-top:20px;line-height:1.6;}
+  .fine strong{color:var(--ink);}
+  footer{margin-top:40px;font-size:.8rem;color:var(--text-dim);}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="wordmark">Foreman</div>
+  <h1>Your own copy of Foreman, fully separate from anyone else's.</h1>
+  <p class="lead">Finance, invoicing, CRM, pipeline, tasks, inventory, and department bots run by a Supervisor — in one place. Click below and it deploys under your own account, with your own private data, in a few minutes.</p>
+
+  <div class="panel">
+    <a class="deploy-btn" href="https://render.com/deploy?repo=https://github.com/thecybershopfst-a11y/Foreman">
+      <img src="https://render.com/images/deploy-to-render-button.svg" alt="Deploy to Render">
+    </a>
+    <ul class="steps">
+      <li>Click the button — it takes you to Render (free to sign up, no card needed to start).</li>
+      <li>Render reviews what it's about to create (a web service + a database) and asks you to approve.</li>
+      <li>Wait a few minutes while it builds. Render shows you the progress.</li>
+      <li>You get a real web address — that's yours. Open it, and Foreman is ready to set up your business.</li>
+    </ul>
+    <div class="fine">
+      <strong>What's already set up for you:</strong> a real database so your data doesn't disappear, and a private access code generated automatically (find it under your new service's "Environment" tab on Render if you ever need it).<br><br>
+      <strong>What's off by default:</strong> AI-drafted content (Marketing, the Supervisor, document generation) — turning that on means adding your own Anthropic API key under Environment, which is optional and has its own small cost per use. Everything else works fully without it.
+    </div>
+  </div>
+
+  <footer>Questions about your deployment? Contact [your contact info here].</footer>
+</div>
+</body>
+</html>
