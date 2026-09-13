@@ -1,0 +1,20 @@
+name: Foreman scheduled automations
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  run-automations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - run: python scheduled_automations.py
+        env:
+          FOREMAN_URL: ${{ secrets.FOREMAN_URL }}
+          FOREMAN_ACCESS_CODE: ${{ secrets.FOREMAN_ACCESS_CODE }}
