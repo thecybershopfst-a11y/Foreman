@@ -48,7 +48,8 @@ from datetime import datetime, timezone
 from contextlib import contextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException, Body, UploadFile, File
+from fastapi import FastAPI, Header, HTTPException, Body, UploadFile, File, Depends
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
@@ -61,6 +62,19 @@ UPLOADS_DIR = Path(__file__).parent / "uploads"
 LOCAL_BUSINESS_ID = "local"
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25MB — generous, since this is real disk storage, not the JSON blob
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")  # unset = AI features stay off, honestly
+ACCESS_CODE = os.environ.get("FOREMAN_ACCESS_CODE")  # unset = local-state mode stays open (fine for genuinely local use)
+
+# DATABASE_URL, if set, points at a real Postgres instance and makes this
+# survive Render's free-tier ephemeral filesystem (SQLite files on that tier
+# get wiped on every restart/spin-down — confirmed in Render's own docs).
+# Not set = falls back to a local SQLite file, which is genuinely persistent
+# when this runs somewhere with a real filesystem (your own machine, a VPS,
+# a paid Render instance with a disk) but NOT on Render's free web service.
+DATABASE_URL = os.environ.get("DATABASE_URL")
+IS_POSTGRES = bool(DATABASE_URL)
+if IS_POSTGRES:
+    import psycopg2
+    import psycopg2.extras
 
 
 @asynccontextmanager
@@ -69,10 +83,14 @@ async def lifespan(app: FastAPI):
     ensure_local_business()
     UPLOADS_DIR.mkdir(exist_ok=True)
     maybe_import_state_file()
+    if IS_POSTGRES:
+        print("[Foreman] Using Postgres for storage — data survives restarts/spin-downs, including on Render's free tier.")
+    else:
+        print("[Foreman] Using local SQLite — fine on your own machine, but WILL be wiped on Render's free web service every time it spins down (15 min idle) or redeploys. Set DATABASE_URL (e.g. a free Neon database) to fix that for a public deployment.")
     yield
 
 
-app = FastAPI(title="Foreman", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Foreman", version="0.3.0", lifespan=lifespan)
 
 # CORS wide open for local development. Lock this down to your actual
 # front-end origin before deploying for real — see README.
@@ -100,14 +118,47 @@ def init_db():
         db.commit()
 
 
+class _DBWrapper:
+    """
+    Makes a Postgres connection quack like the sqlite3 connection the rest of
+    this file was written against — same .execute(sql, params).fetchone()/
+    .fetchall() chaining, same dict-style row["column"] access, same
+    .commit(). Translates sqlite's '?' placeholders to Postgres's '%s'.
+    This keeps every query in the file identical for both backends; only
+    this wrapper and get_db() know the difference exists.
+    """
+    def __init__(self, conn):
+        self._conn = conn
+        self._cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    def execute(self, sql, params=()):
+        self._cursor.execute(sql.replace("?", "%s"), params)
+        return self._cursor
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        self._cursor.close()
+        self._conn.close()
+
+
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-    finally:
-        conn.close()
+    if IS_POSTGRES:
+        conn = psycopg2.connect(DATABASE_URL)
+        wrapper = _DBWrapper(conn)
+        try:
+            yield wrapper
+        finally:
+            wrapper.close()
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+        finally:
+            conn.close()
 
 
 def hash_key(key: str) -> str:
@@ -116,6 +167,24 @@ def hash_key(key: str) -> str:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_basic_auth = HTTPBasic(auto_error=False)
+
+
+def require_access(credentials: HTTPBasicCredentials = Depends(_basic_auth)):
+    """
+    Real protection for a real public URL. If FOREMAN_ACCESS_CODE isn't set,
+    this is a no-op — local-state mode stays open, same as before, which is
+    fine for something running on your own machine that nothing else can
+    reach. Once this is on the open internet (Render, any host), set that
+    env var and the browser will show its native login prompt on first
+    visit — no code in the HTML needed, browsers remember it after that.
+    """
+    if not ACCESS_CODE:
+        return
+    if not credentials or not secrets.compare_digest(credentials.password, ACCESS_CODE):
+        raise HTTPException(status_code=401, detail="Access code required", headers={"WWW-Authenticate": "Basic"})
 
 
 def authenticate(business_id: str, x_api_key: str | None):
@@ -190,16 +259,18 @@ class StatePayload(BaseModel):
 # ---------- Serve the UI ----------
 
 @app.get("/", response_class=HTMLResponse)
-def serve_ui():
+def serve_ui(_: None = Depends(require_access)):
     if not HTML_PATH.exists():
         raise HTTPException(status_code=500, detail="business-os.html not found next to main.py")
     return HTML_PATH.read_text(encoding="utf-8")
 
 
-# ---------- Local single-business mode (no auth — your own machine, your own data) ----------
+# ---------- Local single-business mode ----------
+# Protected by require_access when FOREMAN_ACCESS_CODE is set (see that
+# function's docstring) — open otherwise, for genuinely local/private use.
 
 @app.get("/api/local-state/{key}")
-def get_local_state(key: str):
+def get_local_state(key: str, _: None = Depends(require_access)):
     ensure_local_business()
     with get_db() as db:
         row = db.execute("SELECT state_json FROM businesses WHERE id = ?", (LOCAL_BUSINESS_ID,)).fetchone()
@@ -208,7 +279,7 @@ def get_local_state(key: str):
 
 
 @app.put("/api/local-state/{key}")
-def put_local_state(key: str, payload: dict = Body(...)):
+def put_local_state(key: str, payload: dict = Body(...), _: None = Depends(require_access)):
     ensure_local_business()
     with get_db() as db:
         row = db.execute("SELECT state_json FROM businesses WHERE id = ?", (LOCAL_BUSINESS_ID,)).fetchone()
@@ -223,7 +294,7 @@ def put_local_state(key: str, payload: dict = Body(...)):
 
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), _: None = Depends(require_access)):
     """
     Real file storage on disk — this is the path the front end uses when it's
     actually running through this server (standalone mode). No size limit
@@ -241,7 +312,7 @@ async def upload_file(file: UploadFile = File(...)):
 
 
 @app.get("/api/uploads/{stored_name}")
-def get_upload(stored_name: str):
+def get_upload(stored_name: str, _: None = Depends(require_access)):
     path = UPLOADS_DIR / stored_name
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="File not found")

@@ -648,6 +648,9 @@ function renderSetup(panel){
       <strong>New here?</strong> Load a sample company — Tidewater Coffee Roasters, a small coffee roastery and café — to see every module populated at once. This replaces whatever's currently entered.
       <div style="margin-top:10px;"><button class="btn primary small" id="loadDemoBtn">Load sample company</button></div>
     </div>
+    <div class="warn-box"><strong>Want to clear everything and start fresh?</strong> Removes all data across every module — finance, customers, tasks, everything. Click twice to confirm; there's no undo.
+      <div style="margin-top:10px;"><button class="btn ghost small" id="clearDataBtn" style="color:var(--error);">Clear all data</button></div>
+    </div>
     <div class="grid cols-2">
       <div class="field"><label>Business name</label><input id="s_name" value="${escapeHtml(b.name)}"></div>
       <div class="field"><label>Industry</label><input id="s_industry" value="${escapeHtml(b.industry)}"></div>
@@ -678,6 +681,22 @@ function renderSetup(panel){
     </div>
   `;
   document.getElementById("loadDemoBtn").onclick = ()=>{ loadDemoData(); };
+  const clearBtn = document.getElementById("clearDataBtn");
+  clearBtn.onclick = ()=>{
+    if(!clearBtn.dataset.armed){
+      clearBtn.dataset.armed = "1";
+      clearBtn.textContent = "Click again to permanently delete everything";
+      clearBtn.style.fontWeight = "700";
+      setTimeout(()=>{ if(clearBtn.dataset.armed){ delete clearBtn.dataset.armed; clearBtn.textContent = "Clear all data"; clearBtn.style.fontWeight = ""; } }, 5000);
+      return;
+    }
+    const keepBackendConfig = state.backendConfig;
+    state = defaultState();
+    state.backendConfig = keepBackendConfig;
+    activeTab = "dashboard";
+    saveState();
+    render();
+  };
   document.getElementById("saveSetup").onclick = ()=>{
     b.name=val("s_name"); b.industry=val("s_industry"); b.location=val("s_location");
     b.website=val("s_website"); b.phone=val("s_phone"); b.email=val("s_email");

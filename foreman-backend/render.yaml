@@ -1,0 +1,48 @@
+# Render Blueprint — this is what powers the "Deploy to Render" button.
+# https://render.com/docs/blueprint-spec
+#
+# Clicking that button deploys an entirely separate, private copy of Foreman
+# under the CUSTOMER's own Render account — their own service, their own
+# database, their own URL, completely isolated from every other copy
+# (including yours). You don't host or pay for their instance; they do,
+# on Render's free tier if they choose.
+#
+# autoDeploy: false is deliberate — it stops your future pushes to this
+# repo from automatically redeploying every customer's live copy without
+# their say-so. If you ship an update, customers redeploy manually when
+# they're ready (Render dashboard -> Manual Deploy), same as before.
+
+databases:
+  - name: foreman-db
+    plan: free
+    # Render's own free Postgres expires 30 days after creation. Fine to
+    # start with — for a permanent free database, swap DATABASE_URL below
+    # for a neon.tech connection string in Render's Environment tab before
+    # then.
+
+services:
+  - type: web
+    name: foreman
+    runtime: python
+    plan: free
+    autoDeploy: false
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: foreman-db
+          property: connectionString
+      - key: FOREMAN_ACCESS_CODE
+        generateValue: true
+        # Render generates a real random secret automatically — no decision
+        # needed at deploy time. Find it under this service's Environment
+        # tab afterward if you want to see or change it.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+        # Left blank on purpose. AI features (Marketing drafts, Supervisor,
+        # Document generation) stay off — cleanly, with a clear in-app
+        # message — until whoever owns this deployment adds their own key
+        # here. Nothing breaks either way; the rest of Foreman works fully
+        # without it.
