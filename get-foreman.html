@@ -248,11 +248,13 @@
   <div class="container" style="max-width:640px; text-align:center;">
     <div class="kicker">Get started</div>
     <h2>Ready for your own copy?</h2>
-    <p class="section-lead" style="margin:0 auto 32px;">Checkout is being finalized — for now, use the form below and mention you'd like to purchase. We'll follow up directly.</p>
-    <!-- WEPAY INTEGRATION POINT: once your WePay checkout is connected, replace
-         this button's href/onclick with your real WePay payment link, so buyers
-         pay directly instead of going through the contact form. -->
-    <a href="#contact" class="btn btn-primary" style="font-size:1.05rem; padding:16px 34px;" onclick="document.getElementById('cf_message').value='I\'d like to purchase Foreman.'; document.getElementById('cf_message').focus();">Get in touch to purchase →</a>
+    <p class="section-lead" style="margin:0 auto 32px;">Secure checkout, powered by Stripe.</p>
+    <!-- LIVE MODE: this is currently a TEST-mode Stripe Payment Link — no real
+         charges occur. Once you've verified everything end-to-end, create the
+         equivalent Product/Price/Payment Link/Webhook in live mode and swap
+         this URL for the real one. -->
+    <a href="https://buy.stripe.com/test_eVq5kDcFC2Bb7skcEhak000" class="btn btn-primary" style="font-size:1.05rem; padding:16px 34px;">Buy Foreman — $299 CAD →</a>
+    <p style="font-size:.8rem; color:var(--text-dim); margin-top:16px;">Questions first? <a href="#contact" style="color:var(--amber-deep);">Send a message</a> instead.</p>
   </div>
 </section>
 

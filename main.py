@@ -62,6 +62,7 @@ UPLOADS_DIR = Path(__file__).parent / "uploads"
 LOCAL_BUSINESS_ID = "local"
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25MB — generous, since this is real disk storage, not the JSON blob
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")  # unset = AI features stay off, honestly
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")  # free tier, no credit card — tried first if set
 ACCESS_CODE = os.environ.get("FOREMAN_ACCESS_CODE")  # unset = local-state mode stays open (fine for genuinely local use)
 
 # DATABASE_URL, if set, points at a real Postgres instance and makes this
@@ -560,25 +561,33 @@ class AIRequest(BaseModel):
     prompt: str
 
 
-@app.post("/api/ai/generate")
-def ai_generate(req: AIRequest):
-    """
-    Proxies AI-drafted content (Marketing, Supervisor, Document generation)
-    through a real Anthropic API key held server-side — never exposed to the
-    browser, never in the HTML, never in the repo. Fails honestly, with a
-    clear message, if no key has been configured. That's the current state
-    by default: AI features stay off until someone deliberately turns them
-    on by setting ANTHROPIC_API_KEY, since every call costs real money.
-    """
-    if not ANTHROPIC_API_KEY:
-        raise HTTPException(
-            status_code=501,
-            detail="AI features aren't turned on for this installation — no Anthropic API key has been configured on this server."
-        )
+def _call_gemini(prompt: str) -> str:
+    body = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode()
+    request = urllib.request.Request(
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        data=body,
+        headers={"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="replace")
+        raise HTTPException(status_code=e.code, detail=f"Gemini API error: {detail}")
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=502, detail=f"Couldn't reach Gemini's API: {e.reason}")
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError):
+        raise HTTPException(status_code=502, detail=f"Gemini returned an unexpected response shape: {json.dumps(data)[:300]}")
+
+
+def _call_anthropic(prompt: str) -> str:
     body = json.dumps({
         "model": "claude-sonnet-4-6",
         "max_tokens": 400,
-        "messages": [{"role": "user", "content": req.prompt}],
+        "messages": [{"role": "user", "content": prompt}],
     }).encode()
     request = urllib.request.Request(
         "https://api.anthropic.com/v1/messages",
@@ -598,12 +607,34 @@ def ai_generate(req: AIRequest):
         raise HTTPException(status_code=e.code, detail=f"Anthropic API error: {detail}")
     except urllib.error.URLError as e:
         raise HTTPException(status_code=502, detail=f"Couldn't reach Anthropic's API: {e.reason}")
-    text = ""
     for block in data.get("content", []):
         if block.get("type") == "text":
-            text = block.get("text", "")
-            break
-    return {"text": text}
+            return block.get("text", "")
+    return ""
+
+
+@app.post("/api/ai/generate")
+def ai_generate(req: AIRequest):
+    """
+    Proxies AI-drafted content (Marketing, Supervisor, Document generation)
+    through a real API key held server-side — never exposed to the browser,
+    never in the HTML, never in the repo.
+
+    Tries Gemini first (GEMINI_API_KEY) — Google's free tier, no credit card,
+    genuinely $0 at this app's usage volume. Falls back to Anthropic
+    (ANTHROPIC_API_KEY) if that's set instead or as well — higher quality,
+    real per-use cost. Fails honestly, with a clear message, if neither is
+    configured. That's the current default: AI features stay off until
+    someone deliberately turns one on.
+    """
+    if GEMINI_API_KEY:
+        return {"text": _call_gemini(req.prompt)}
+    if ANTHROPIC_API_KEY:
+        return {"text": _call_anthropic(req.prompt)}
+    raise HTTPException(
+        status_code=501,
+        detail="AI features aren't turned on for this installation — no Gemini or Anthropic API key has been configured on this server."
+    )
 
 
 # ---------- Multi-tenant mode (real API keys — the path for real deployment) ----------

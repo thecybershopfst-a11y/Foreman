@@ -32,16 +32,79 @@ Documents can have a real file attached — a certificate, a lease PDF, whatever
 
 Foreman running as a Claude artifact (phone, tablet, wherever) has a **Data & Backend → Export all data** button that downloads your whole business as one JSON file. Drop that file next to `main.py`, name it exactly `import-state.json`, and start the program — it's seeded automatically on first run. (It only does this once, when local data is still empty — it won't silently overwrite real work you've since done here.)
 
+## Data engineer audit (this deployment, checked against Render's actual docs)
+
+**Critical — fixed:** Render's free web services have an ephemeral filesystem. Confirmed directly from Render's own documentation: any local file (including a SQLite database) is wiped on every restart, redeploy, *and* every spin-down from 15 minutes of inactivity. On the free tier, that's not a rare edge case — it's the normal behavior between visits. **This means your data was very likely already being silently lost.**
+
+*Fix:* optional Postgres support via a `DATABASE_URL` environment variable. Set it and every write survives restarts — verified by killing the running process entirely and confirming the data was still there after a full restart against the same database, with the local SQLite file deleted first so there was no way to cheat the test. Don't set it, and the app falls back to local SQLite exactly as before (correct for running on your own machine; still wrong for Render's free tier without this fix).
+
+**A free way to get that Postgres database:** [neon.tech](https://neon.tech) — no credit card, a free project gives you a connection string immediately. Copy it, add it to Render under Environment as `DATABASE_URL`, redeploy. (Render's *own* free Postgres works too, but expires after 30 days — Neon's free tier doesn't.)
+
+**High — fixed:** the local-state and file-upload endpoints had no authentication at all. That was a reasonable default for something running only on your own machine; it stops being reasonable the moment the app is on a public URL, since anyone with the link could read or overwrite your real business data.
+
+*Fix:* an optional `FOREMAN_ACCESS_CODE` environment variable. Set it, and your browser shows its native login prompt the first time you visit — no code changes to remember, the browser handles it and stays logged in after that. Leave it unset and everything works exactly as before, open, correct for genuinely private local use. Verified: no credentials is rejected, the wrong code is rejected, the right code is allowed, and `/health` stays open regardless so uptime monitors still work.
+
+## Selling this — giving customers their own copy
+
+`render.yaml` in this folder is a Render Blueprint — it's what makes a single link deploy an entire separate, working copy of Foreman (its own web service, its own database, fully isolated from yours or any other customer's) under whoever clicks it. No manual GitHub-then-Render walkthrough needed for each customer — that's exactly the multi-step process from before, now collapsed into one click.
+
+**Set it up once:**
+1. Push this whole folder — including the new `render.yaml` and `get-foreman.html` — to your GitHub repo (same "Add file → Upload files" as before).
+2. Your deploy link is: `https://render.com/deploy?repo=` followed by your repo's URL, e.g. `https://render.com/deploy?repo=https://github.com/thecybershopfst-a11y/Foreman`
+3. Open `get-foreman.html` and replace `REPLACE_WITH_YOUR_GITHUB_REPO_URL` with your actual repo URL (that's the only edit it needs).
+4. Optionally, paste this into your `README.md` to get the same button right on your GitHub repo page:
+   ```
+   [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/thecybershopfst-a11y/Foreman)
+   ```
+
+**What happens when a customer clicks it:** Render deploys their own private instance — a web service plus a real database, both under *their* Render account, not yours. A secure access code is generated automatically, so it's protected from the moment it's live, with zero setup on their part. AI features stay off until they choose to add their own Anthropic key, exactly like your own deployment — nothing breaks either way.
+
+**Hosting `get-foreman.html` somewhere you can actually link to:** GitHub Pages does this for free. In your repo's Settings → Pages, set the source to your main branch, and GitHub gives you a real URL like `https://yourname.github.io/foreman/get-foreman.html` — that's the link to put in an email, a text, wherever you're telling customers about this.
+
+**What "buying a license" means here, concretely:** each customer gets a fully separate, working copy — not a login to something you host and maintain for everyone. That also means you're not on the hook for their hosting costs or uptime; they own their own Render account and instance. If you'd rather host and manage every customer's data yourself (a subscription model instead), that's the multi-tenant mode described above (`/register` + real API keys) — a different, bigger undertaking than what's built here today.
+
+## Running Foreman's automations on a real schedule, for free
+
+`scheduled_automations.py` is a direct Python port of the automation rules already in the app (overdue invoices, low stock, stalled deals, expiring documents, recurring billing, won-deal handoffs). Normally those only fire when someone has the app open in a browser. This runs them for real, on a schedule, whether anyone's looking or not — genuinely autonomous, and genuinely free, because it's fixed business-rule logic, not AI. It respects the same on/off toggles as the Automations tab in the app, and uses the same deduplication scheme, so it plays correctly with the browser version — verified by running it twice in a row against real seeded data and confirming zero duplicate tasks the second time.
+
+**One-time setup:**
+1. Upload `scheduled_automations.py` and the `.github/workflows/scheduled-automations.yml` file (keep the `.github` folder structure — GitHub only recognizes workflows in that exact location) to your repo.
+2. In your repo, go to **Settings → Secrets and variables → Actions**, and add two repository secrets:
+   - `FOREMAN_URL` — your deployed site's address (e.g. `https://your-app.onrender.com`)
+   - `FOREMAN_ACCESS_CODE` — only needed if you've set one on the server (you should have)
+3. That's it. It runs automatically every 6 hours from then on. Change the schedule by editing the `cron:` line in the workflow file — [crontab.guru](https://crontab.guru) makes building that expression easy.
+
+You can also trigger a run manually any time: your repo's **Actions** tab → "Foreman scheduled automations" → **Run workflow**.
+
+This does not touch Marketing drafts, the Supervisor, or document generation — those need real AI judgment, which means real API costs. This only runs the deterministic parts.
+
+## Updating your OWN existing deployment with the data-loss and security fixes
+
+1. On GitHub, in your `foreman` repository, use "Add file → Upload files" and upload the new `main.py` and `requirements.txt` from this update (they overwrite the old ones).
+2. On Render, go to your service → **Environment**, and add:
+   - `DATABASE_URL` — your Neon (or other Postgres) connection string, to actually fix data loss.
+   - `FOREMAN_ACCESS_CODE` — any password you choose, to actually lock down who can see your data.
+3. Render redeploys automatically. The first visit after that, your browser will ask for a username (anything works) and password (your access code) — that's the fix working.
+
+## Turning on AI features — free option available
+
+Marketing drafts, the Supervisor, and document generation need a real AI API key — server-side only, never in the repo, never in the browser. Two options, and you can set either (or both):
+
+- **`GEMINI_API_KEY`** — Google's Gemini API. Genuinely free at this app's usage volume, no credit card required. Get one at [aistudio.google.com](https://aistudio.google.com) → "Get API key." Tried first if set.
+- **`ANTHROPIC_API_KEY`** — higher quality, real per-use cost. Used if Gemini isn't set (or as a fallback).
+
+Leave both unset and every AI feature shows a clear, honest message instead of failing silently — nothing else in the app needs either key to work.
+
 ## Deploying for real
 
 Any host that runs a Python process works: Railway, Render, Fly.io, a small VPS.
 1. Push this folder to a git repo.
 2. Start command: `python main.py` (it reads the `PORT` environment variable if your host sets one).
 
-**Before real customers use a deployed version:**
-- Local mode (`/api/local-state`) has **no authentication at all** — it's built for "this runs on my own computer." Don't expose it on the open internet for multiple people to share; use multi-tenant mode (`/register` + real API keys) instead, and consider removing the local-mode routes from a shared deployment entirely.
+**Before customers use a deployed version:**
+- `DATABASE_URL` and `FOREMAN_ACCESS_CODE` (above) are no longer optional at that point — set both.
+- Local mode (`/api/local-state`) is still fundamentally single-business — fine for you, or for one customer's own private deployment. For multiple customers sharing one deployment, use multi-tenant mode (`/register` + real API keys) instead.
 - Lock down CORS (`allow_origins=["*"]` in `main.py` is fine for local dev, not for production).
-- Move off SQLite to Postgres if you expect concurrent writers.
 - Terms of Service / privacy policy — still not optional, still needs an actual lawyer.
 
 ## API reference
