@@ -398,6 +398,27 @@ def contact_form(form: ContactForm):
     return {"received": True}
 
 
+@app.get("/api/stripe/webhook/status")
+def stripe_webhook_status():
+    """
+    A direct diagnostic, so we don't have to guess or dig through Stripe's or
+    Render's UI to find out whether the secret actually made it onto the
+    server. Never reveals the working secret itself — just enough to confirm
+    whether it's set at all, and to spot-check it against what it should be
+    without exposing it in full.
+    """
+    secret = os.environ.get("STRIPE_WEBHOOK_SECRET")
+    if not secret:
+        return {"configured": False, "message": "STRIPE_WEBHOOK_SECRET is NOT set on this server right now."}
+    return {
+        "configured": True,
+        "length": len(secret),
+        "starts_with": secret[:8],
+        "ends_with": secret[-4:],
+        "message": "STRIPE_WEBHOOK_SECRET is set. Compare starts_with/ends_with/length to the real value to confirm it's correct.",
+    }
+
+
 class SaleWebhook(BaseModel):
     customer_name: str
     customer_email: str | None = None
