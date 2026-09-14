@@ -41,13 +41,15 @@ import json
 import secrets
 import hashlib
 import os
-import shutil
 import uuid
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 from contextlib import contextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException, Body, UploadFile, File
+from fastapi import FastAPI, Header, HTTPException, Body, UploadFile, File, Depends, Request
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
@@ -59,6 +61,20 @@ IMPORT_PATH = Path(__file__).parent / "import-state.json"
 UPLOADS_DIR = Path(__file__).parent / "uploads"
 LOCAL_BUSINESS_ID = "local"
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25MB — generous, since this is real disk storage, not the JSON blob
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")  # unset = AI features stay off, honestly
+ACCESS_CODE = os.environ.get("FOREMAN_ACCESS_CODE")  # unset = local-state mode stays open (fine for genuinely local use)
+
+# DATABASE_URL, if set, points at a real Postgres instance and makes this
+# survive Render's free-tier ephemeral filesystem (SQLite files on that tier
+# get wiped on every restart/spin-down — confirmed in Render's own docs).
+# Not set = falls back to a local SQLite file, which is genuinely persistent
+# when this runs somewhere with a real filesystem (your own machine, a VPS,
+# a paid Render instance with a disk) but NOT on Render's free web service.
+DATABASE_URL = os.environ.get("DATABASE_URL")
+IS_POSTGRES = bool(DATABASE_URL)
+if IS_POSTGRES:
+    import psycopg2
+    import psycopg2.extras
 
 
 @asynccontextmanager
@@ -67,10 +83,14 @@ async def lifespan(app: FastAPI):
     ensure_local_business()
     UPLOADS_DIR.mkdir(exist_ok=True)
     maybe_import_state_file()
+    if IS_POSTGRES:
+        print("[Foreman] Using Postgres for storage — data survives restarts/spin-downs, including on Render's free tier.")
+    else:
+        print("[Foreman] Using local SQLite — fine on your own machine, but WILL be wiped on Render's free web service every time it spins down (15 min idle) or redeploys. Set DATABASE_URL (e.g. a free Neon database) to fix that for a public deployment.")
     yield
 
 
-app = FastAPI(title="Foreman", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Foreman", version="0.3.0", lifespan=lifespan)
 
 # CORS wide open for local development. Lock this down to your actual
 # front-end origin before deploying for real — see README.
@@ -98,14 +118,47 @@ def init_db():
         db.commit()
 
 
+class _DBWrapper:
+    """
+    Makes a Postgres connection quack like the sqlite3 connection the rest of
+    this file was written against — same .execute(sql, params).fetchone()/
+    .fetchall() chaining, same dict-style row["column"] access, same
+    .commit(). Translates sqlite's '?' placeholders to Postgres's '%s'.
+    This keeps every query in the file identical for both backends; only
+    this wrapper and get_db() know the difference exists.
+    """
+    def __init__(self, conn):
+        self._conn = conn
+        self._cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    def execute(self, sql, params=()):
+        self._cursor.execute(sql.replace("?", "%s"), params)
+        return self._cursor
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        self._cursor.close()
+        self._conn.close()
+
+
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-    finally:
-        conn.close()
+    if IS_POSTGRES:
+        conn = psycopg2.connect(DATABASE_URL)
+        wrapper = _DBWrapper(conn)
+        try:
+            yield wrapper
+        finally:
+            wrapper.close()
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+        finally:
+            conn.close()
 
 
 def hash_key(key: str) -> str:
@@ -114,6 +167,24 @@ def hash_key(key: str) -> str:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_basic_auth = HTTPBasic(auto_error=False)
+
+
+def require_access(credentials: HTTPBasicCredentials = Depends(_basic_auth)):
+    """
+    Real protection for a real public URL. If FOREMAN_ACCESS_CODE isn't set,
+    this is a no-op — local-state mode stays open, same as before, which is
+    fine for something running on your own machine that nothing else can
+    reach. Once this is on the open internet (Render, any host), set that
+    env var and the browser will show its native login prompt on first
+    visit — no code in the HTML needed, browsers remember it after that.
+    """
+    if not ACCESS_CODE:
+        return
+    if not credentials or not secrets.compare_digest(credentials.password, ACCESS_CODE):
+        raise HTTPException(status_code=401, detail="Access code required", headers={"WWW-Authenticate": "Basic"})
 
 
 def authenticate(business_id: str, x_api_key: str | None):
@@ -188,16 +259,34 @@ class StatePayload(BaseModel):
 # ---------- Serve the UI ----------
 
 @app.get("/", response_class=HTMLResponse)
-def serve_ui():
+def serve_ui(_: None = Depends(require_access)):
     if not HTML_PATH.exists():
         raise HTTPException(status_code=500, detail="business-os.html not found next to main.py")
     return HTML_PATH.read_text(encoding="utf-8")
 
 
-# ---------- Local single-business mode (no auth — your own machine, your own data) ----------
+DEMO_HTML_PATH = Path(__file__).parent / "foreman-demo.html"
+
+
+@app.get("/demo", response_class=HTMLResponse)
+def serve_demo():
+    """
+    Public, no login required — this is the live demo for prospective
+    customers, not your real business. It always boots fresh into sample
+    data and never saves anything (see the DEMO MODE block at the top of
+    foreman-demo.html's script).
+    """
+    if not DEMO_HTML_PATH.exists():
+        raise HTTPException(status_code=500, detail="foreman-demo.html not found next to main.py")
+    return DEMO_HTML_PATH.read_text(encoding="utf-8")
+
+
+# ---------- Local single-business mode ----------
+# Protected by require_access when FOREMAN_ACCESS_CODE is set (see that
+# function's docstring) — open otherwise, for genuinely local/private use.
 
 @app.get("/api/local-state/{key}")
-def get_local_state(key: str):
+def get_local_state(key: str, _: None = Depends(require_access)):
     ensure_local_business()
     with get_db() as db:
         row = db.execute("SELECT state_json FROM businesses WHERE id = ?", (LOCAL_BUSINESS_ID,)).fetchone()
@@ -206,7 +295,7 @@ def get_local_state(key: str):
 
 
 @app.put("/api/local-state/{key}")
-def put_local_state(key: str, payload: dict = Body(...)):
+def put_local_state(key: str, payload: dict = Body(...), _: None = Depends(require_access)):
     ensure_local_business()
     with get_db() as db:
         row = db.execute("SELECT state_json FROM businesses WHERE id = ?", (LOCAL_BUSINESS_ID,)).fetchone()
@@ -221,7 +310,7 @@ def put_local_state(key: str, payload: dict = Body(...)):
 
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), _: None = Depends(require_access)):
     """
     Real file storage on disk — this is the path the front end uses when it's
     actually running through this server (standalone mode). No size limit
@@ -239,7 +328,7 @@ async def upload_file(file: UploadFile = File(...)):
 
 
 @app.get("/api/uploads/{stored_name}")
-def get_upload(stored_name: str):
+def get_upload(stored_name: str, _: None = Depends(require_access)):
     path = UPLOADS_DIR / stored_name
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
@@ -247,6 +336,253 @@ def get_upload(stored_name: str):
     if UPLOADS_DIR.resolve() not in path.resolve().parents:
         raise HTTPException(status_code=400, detail="Invalid path")
     return FileResponse(path)
+
+
+class ContactForm(BaseModel):
+    name: str
+    email: str
+    message: str
+
+
+@app.post("/api/contact")
+def contact_form(form: ContactForm):
+    """
+    The public marketing site's contact form posts here. No login required —
+    strangers submitting this is the whole point. Never exposes your real
+    email anywhere on the public page; instead, this creates a real Lead in
+    your own CRM, so "replying" just means opening Foreman and looking at
+    Customers. Nothing here sends an email or notifies anyone automatically —
+    that's a deliberate choice, not a missing feature: you check when you
+    check, on your own time.
+    """
+    ensure_local_business()
+    with get_db() as db:
+        row = db.execute("SELECT state_json FROM businesses WHERE id = ?", (LOCAL_BUSINESS_ID,)).fetchone()
+        blob = json.loads(row["state_json"]) if row else {}
+        core = json.loads(blob.get("business-os-core-v1") or "{}")
+        core.setdefault("customers", [])
+        core.setdefault("auditLog", [])
+
+        existing = next((c for c in core["customers"] if c.get("email") == form.email), None)
+        if existing:
+            existing["notes"] = (existing.get("notes", "") + f"\n\n[{now_iso()[:10]}] {form.message}").strip()
+        else:
+            core["customers"].append({
+                "id": uuid.uuid4().hex,
+                "name": form.name,
+                "company": "",
+                "status": "Lead",
+                "email": form.email,
+                "phone": "",
+                "followUp": "",
+                "notes": f"Website contact form: {form.message}",
+                "_added": now_iso(),
+            })
+
+        core["auditLog"].insert(0, {
+            "id": uuid.uuid4().hex,
+            "ts": now_iso(),
+            "action": "Contact form (website)",
+            "detail": f"{form.name} <{form.email}>: {form.message[:120]}",
+        })
+        if len(core["auditLog"]) > 300:
+            core["auditLog"] = core["auditLog"][:300]
+
+        blob["business-os-core-v1"] = json.dumps(core)
+        db.execute(
+            "UPDATE businesses SET state_json = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(blob), now_iso(), LOCAL_BUSINESS_ID),
+        )
+        db.commit()
+
+    return {"received": True}
+
+
+class SaleWebhook(BaseModel):
+    customer_name: str
+    customer_email: str | None = None
+    amount: float
+    product_name: str = "Foreman license"
+    source: str = "website"
+
+
+def _record_sale(customer_name: str, customer_email: str | None, amount: float, product_name: str, source: str):
+    """
+    Shared by both the generic sale webhook and the real Stripe webhook —
+    same logic either way, so a $299 sale looks identical in your business
+    data whether it came from a manual POST or a real Stripe payment.
+    """
+    ensure_local_business()
+    with get_db() as db:
+        row = db.execute("SELECT state_json FROM businesses WHERE id = ?", (LOCAL_BUSINESS_ID,)).fetchone()
+        blob = json.loads(row["state_json"]) if row else {}
+        core = json.loads(blob.get("business-os-core-v1") or "{}")
+
+        core.setdefault("customers", [])
+        core.setdefault("finance", {"transactions": []})
+        core.setdefault("invoices", [])
+        core.setdefault("auditLog", [])
+
+        today = now_iso()[:10]
+
+        customer = None
+        if customer_email:
+            customer = next((c for c in core["customers"] if c.get("email") == customer_email), None)
+        if not customer:
+            customer = next((c for c in core["customers"] if c.get("name") == customer_name), None)
+
+        if customer:
+            customer["status"] = "Repeat Customer" if customer.get("status") == "Customer" else customer.get("status", "Customer")
+        else:
+            customer = {
+                "id": uuid.uuid4().hex,
+                "name": customer_name,
+                "company": "",
+                "status": "Customer",
+                "email": customer_email or "",
+                "phone": "",
+                "followUp": "",
+                "notes": f"Purchased via {source}",
+                "_added": now_iso(),
+            }
+            core["customers"].append(customer)
+
+        core["finance"]["transactions"].append({
+            "id": uuid.uuid4().hex,
+            "type": "income",
+            "category": "Product sales",
+            "amount": amount,
+            "date": today,
+            "notes": f"{product_name} — {customer_name} (via {source})",
+        })
+
+        core["invoices"].append({
+            "id": uuid.uuid4().hex,
+            "customer": customer_name,
+            "dueDate": today,
+            "status": "Paid",
+            "created": now_iso(),
+            "items": [{"id": uuid.uuid4().hex, "desc": product_name, "amount": amount}],
+        })
+
+        core["auditLog"].insert(0, {
+            "id": uuid.uuid4().hex,
+            "ts": now_iso(),
+            "action": "Sale (website)",
+            "detail": f"{customer_name} purchased {product_name} for ${amount:,.2f} via {source}",
+        })
+        if len(core["auditLog"]) > 300:
+            core["auditLog"] = core["auditLog"][:300]
+
+        blob["business-os-core-v1"] = json.dumps(core)
+        db.execute(
+            "UPDATE businesses SET state_json = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(blob), now_iso(), LOCAL_BUSINESS_ID),
+        )
+        db.commit()
+
+
+@app.post("/api/webhook/sale")
+def webhook_sale(sale: SaleWebhook, x_webhook_secret: str | None = Header(default=None)):
+    """
+    Generic sale webhook — for manual testing, or any payment processor that
+    isn't Stripe. For your real Stripe Payment Link, use /api/stripe/webhook
+    instead (below), which verifies Stripe's real signature.
+
+    Protected by a separate secret (FOREMAN_WEBHOOK_SECRET) from your login
+    access code, since this one gets called by a server, not a person typing
+    in a browser.
+    """
+    webhook_secret = os.environ.get("FOREMAN_WEBHOOK_SECRET")
+    if webhook_secret:
+        if not x_webhook_secret or not secrets.compare_digest(x_webhook_secret, webhook_secret):
+            raise HTTPException(status_code=401, detail="Invalid webhook secret")
+    _record_sale(sale.customer_name, sale.customer_email, sale.amount, sale.product_name, sale.source)
+    return {"recorded": True, "customer": sale.customer_name, "amount": sale.amount}
+
+
+@app.post("/api/stripe/webhook")
+async def stripe_webhook(request: Request):
+    """
+    The real one. Point your Stripe webhook endpoint (Dashboard -> Developers
+    -> Webhooks) at this URL, subscribed to the checkout.session.completed
+    event. Stripe signs every request with STRIPE_WEBHOOK_SECRET (shown when
+    you create the endpoint in Stripe) — this verifies that signature before
+    trusting anything in the payload, so a stranger can't POST fake sales
+    here even without knowing a secret of your own choosing.
+    """
+    import stripe as stripe_lib
+
+    webhook_secret = os.environ.get("STRIPE_WEBHOOK_SECRET")
+    if not webhook_secret:
+        raise HTTPException(status_code=501, detail="STRIPE_WEBHOOK_SECRET not configured on this server yet.")
+
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+    try:
+        event = stripe_lib.Webhook.construct_event(payload, sig_header, webhook_secret)
+    except (ValueError, stripe_lib.error.SignatureVerificationError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid Stripe signature: {e}")
+
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"].to_dict()
+        customer_details = session.get("customer_details") or {}
+        name = customer_details.get("name") or "Stripe customer"
+        email = customer_details.get("email")
+        amount = (session.get("amount_total") or 0) / 100  # Stripe amounts are in cents
+        _record_sale(name, email, amount, "Foreman — Standard License", "Stripe")
+
+    return {"received": True}
+
+
+class AIRequest(BaseModel):
+    prompt: str
+
+
+@app.post("/api/ai/generate")
+def ai_generate(req: AIRequest):
+    """
+    Proxies AI-drafted content (Marketing, Supervisor, Document generation)
+    through a real Anthropic API key held server-side — never exposed to the
+    browser, never in the HTML, never in the repo. Fails honestly, with a
+    clear message, if no key has been configured. That's the current state
+    by default: AI features stay off until someone deliberately turns them
+    on by setting ANTHROPIC_API_KEY, since every call costs real money.
+    """
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(
+            status_code=501,
+            detail="AI features aren't turned on for this installation — no Anthropic API key has been configured on this server."
+        )
+    body = json.dumps({
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 400,
+        "messages": [{"role": "user", "content": req.prompt}],
+    }).encode()
+    request = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="replace")
+        raise HTTPException(status_code=e.code, detail=f"Anthropic API error: {detail}")
+    except urllib.error.URLError as e:
+        raise HTTPException(status_code=502, detail=f"Couldn't reach Anthropic's API: {e.reason}")
+    text = ""
+    for block in data.get("content", []):
+        if block.get("type") == "text":
+            text = block.get("text", "")
+            break
+    return {"text": text}
 
 
 # ---------- Multi-tenant mode (real API keys — the path for real deployment) ----------
