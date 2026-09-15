@@ -1,4 +1,9 @@
 """
+FOREMAN_BUILD_MARKER: 2026-09-15-gemini-3.6-flash-fix
+(This line only exists so we can confirm which version is actually live —
+check for it directly on GitHub or via curl before assuming a deploy
+worked. Safe to ignore otherwise.)
+
 Foreman — one program: a single Python server that serves the Foreman UI
 AND its backend on the same port. Run this one file, open the URL it
 prints, and you have the whole thing — no separate frontend/backend
@@ -592,7 +597,7 @@ class AIRequest(BaseModel):
 def _call_gemini(prompt: str) -> str:
     body = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode()
     request = urllib.request.Request(
-        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
         data=body,
         headers={"Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY},
         method="POST",
