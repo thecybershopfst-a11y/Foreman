@@ -39,6 +39,11 @@ services:
         # Render generates a real random secret automatically — no decision
         # needed at deploy time. Find it under this service's Environment
         # tab afterward if you want to see or change it.
+      - key: GEMINI_API_KEY
+        sync: false
+        # Left blank on purpose, same as ANTHROPIC_API_KEY below. This is
+        # the free option — a Google AI Studio key, no credit card, tried
+        # first automatically if set. See the README for how to get one.
       - key: ANTHROPIC_API_KEY
         sync: false
         # Left blank on purpose. AI features (Marketing drafts, Supervisor,
