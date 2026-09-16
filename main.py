@@ -49,6 +49,9 @@ import os
 import uuid
 import urllib.request
 import urllib.error
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from datetime import datetime, timezone
 from contextlib import contextmanager
 from pathlib import Path
@@ -68,6 +71,8 @@ LOCAL_BUSINESS_ID = "local"
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25MB — generous, since this is real disk storage, not the JSON blob
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")  # unset = AI features stay off, honestly
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")  # free tier, no credit card — tried first if set
+GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")  # sends the real purchase-delivery email
+GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")  # a Gmail App Password, not your real password
 ACCESS_CODE = os.environ.get("FOREMAN_ACCESS_CODE")  # unset = local-state mode stays open (fine for genuinely local use)
 
 # DATABASE_URL, if set, points at a real Postgres instance and makes this
@@ -461,6 +466,104 @@ class SaleWebhook(BaseModel):
     source: str = "website"
 
 
+def _build_purchase_email_html(name: str, order_id: str, amount: float) -> str:
+    first_name = (name or "there").split()[0]
+    return f"""<!DOCTYPE html>
+<html><body style="margin:0; padding:0; background:#EEF1F0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#EEF1F0; padding:32px 0;">
+<tr><td align="center">
+<table role="presentation" width="560" cellpadding="0" cellspacing="0" style="background:#FFFFFF; border-radius:14px; overflow:hidden; border:1px solid #D7DCDD;">
+  <tr><td style="background:#0D1015; padding:32px 40px;">
+    <div style="font-family:Georgia,serif; font-weight:800; font-size:1.4rem; color:#fff; letter-spacing:-.01em;">Foreman</div>
+  </td></tr>
+  <tr><td style="padding:40px;">
+    <h1 style="font-size:1.5rem; margin:0 0 8px; color:#12161C;">Your license is ready, {first_name}.</h1>
+    <p style="color:#5B6670; font-size:1rem; line-height:1.6; margin:0 0 28px;">
+      Thanks for purchasing Foreman — Standard License. This email has everything you need to get your own copy running. No coding, about 3 minutes start to finish.
+    </p>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#F7F5F1; border-radius:10px; margin-bottom:28px;">
+      <tr><td style="padding:20px 24px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+          <tr>
+            <td style="font-size:.85rem; color:#5B6670; padding-bottom:6px;">Order</td>
+            <td style="font-size:.85rem; color:#5B6670; text-align:right; padding-bottom:6px;">#{order_id}</td>
+          </tr>
+          <tr>
+            <td style="font-size:.95rem; color:#12161C; font-weight:600;">Foreman — Standard License</td>
+            <td style="font-size:.95rem; color:#12161C; font-weight:600; text-align:right;">${amount:,.2f} CAD</td>
+          </tr>
+        </table>
+      </td></tr>
+    </table>
+    <h2 style="font-size:1rem; color:#12161C; margin:0 0 6px;">Step 1 — Deploy your copy</h2>
+    <p style="color:#5B6670; font-size:.95rem; line-height:1.6; margin:0 0 16px;">
+      Click below and sign in with (or create) a free Render account. This creates a private copy of Foreman — yours alone, not shared with any other customer.
+    </p>
+    <table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+      <tr><td style="background:#AD7A2E; border-radius:8px;">
+        <a href="https://render.com/deploy?repo=https://github.com/thecybershopfst-a11y/Foreman"
+           style="display:inline-block; padding:14px 28px; color:#fff; font-weight:700; font-size:.95rem; text-decoration:none;">
+          Deploy my copy of Foreman &rarr;
+        </a>
+      </td></tr>
+    </table>
+    <h2 style="font-size:1rem; color:#12161C; margin:0 0 6px;">Step 2 — Find your access code</h2>
+    <p style="color:#5B6670; font-size:.95rem; line-height:1.6; margin:0 0 28px;">
+      Once deployed, Render generates a private password automatically (<code style="background:#F1E4CC; padding:2px 6px; border-radius:4px;">FOREMAN_ACCESS_CODE</code>) — find it under your new service's <strong>Environment</strong> tab. That's your login; any username works alongside it.
+    </p>
+    <h2 style="font-size:1rem; color:#12161C; margin:0 0 6px;">Step 3 — Open your copy</h2>
+    <p style="color:#5B6670; font-size:.95rem; line-height:1.6; margin:0 0 28px;">
+      Your URL will look like <code style="background:#F1E4CC; padding:2px 6px; border-radius:4px;">your-name.onrender.com</code> — Render shows it on the same page once deployment finishes (usually under a minute).
+    </p>
+    <hr style="border:none; border-top:1px solid #D7DCDD; margin:32px 0;">
+    <p style="color:#5B6670; font-size:.9rem; line-height:1.6; margin:0 0 4px;">
+      Questions, or want a hand with setup? Just reply to this email, or call <strong>902-321-1375</strong>.
+    </p>
+    <p style="color:#5B6670; font-size:.9rem; line-height:1.6; margin:0;">
+      Want to talk it through live? <a href="https://calendly.com/thecybershop-fst/30min" style="color:#AD7A2E;">Book a Foreman Setup Call &rarr;</a>
+    </p>
+  </td></tr>
+  <tr><td style="background:#0D1015; padding:24px 40px; text-align:center;">
+    <p style="color:#6C7580; font-size:.78rem; margin:0;">&copy; 2026 Foreman. Your license is yours to keep &mdash; no recurring fee, ever.</p>
+  </td></tr>
+</table>
+</td></tr>
+</table>
+</body></html>"""
+
+
+def _send_purchase_email(name: str, to_email: str, order_id: str, amount: float):
+    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
+        raise RuntimeError("GMAIL_ADDRESS or GMAIL_APP_PASSWORD not configured on this server.")
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Your Foreman license is ready"
+    msg["From"] = f"Foreman <{GMAIL_ADDRESS}>"
+    msg["To"] = to_email
+    msg.attach(MIMEText(_build_purchase_email_html(name, order_id, amount), "html"))
+    with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as server:
+        server.starttls()
+        server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+        server.sendmail(GMAIL_ADDRESS, [to_email], msg.as_string())
+
+
+@app.get("/api/email/status")
+def email_status():
+    """
+    Same diagnostic pattern as /api/ai/status and /api/stripe/webhook/status —
+    confirms what's actually configured without exposing the real password.
+    """
+    configured = bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD)
+    return {
+        "configured": configured,
+        "gmail_address": GMAIL_ADDRESS if GMAIL_ADDRESS else None,
+        "app_password_length": len(GMAIL_APP_PASSWORD) if GMAIL_APP_PASSWORD else None,
+        "message": (
+            "Ready to send real purchase-delivery emails." if configured
+            else "GMAIL_ADDRESS and/or GMAIL_APP_PASSWORD not set — delivery emails will fail (sales still get recorded either way)."
+        ),
+    }
+
+
 def _record_sale(customer_name: str, customer_email: str | None, amount: float, product_name: str, source: str):
     """
     Shared by both the generic sale webhook and the real Stripe webhook —
@@ -585,7 +688,31 @@ async def stripe_webhook(request: Request):
         name = customer_details.get("name") or "Stripe customer"
         email = customer_details.get("email")
         amount = (session.get("amount_total") or 0) / 100  # Stripe amounts are in cents
+        order_id = session.get("id", "")[-8:].upper() if session.get("id") else "N/A"
         _record_sale(name, email, amount, "Foreman — Standard License", "Stripe")
+        if email:
+            try:
+                _send_purchase_email(name, email, order_id, amount)
+            except Exception as e:
+                # A failed email must never look like a failed sale — the sale is
+                # already recorded above. Log it to the audit trail so it's
+                # visible in the app, rather than silently lost.
+                ensure_local_business()
+                with get_db() as db:
+                    row = db.execute("SELECT state_json FROM businesses WHERE id = ?", (LOCAL_BUSINESS_ID,)).fetchone()
+                    blob = json.loads(row["state_json"]) if row else {}
+                    core = json.loads(blob.get("business-os-core-v1") or "{}")
+                    core.setdefault("auditLog", [])
+                    core["auditLog"].insert(0, {
+                        "id": uuid.uuid4().hex,
+                        "ts": now_iso(),
+                        "action": "Delivery email FAILED",
+                        "detail": f"Sale recorded for {name} <{email}>, but the delivery email failed to send: {e}",
+                    })
+                    blob["business-os-core-v1"] = json.dumps(core)
+                    db.execute("UPDATE businesses SET state_json = ?, updated_at = ? WHERE id = ?",
+                               (json.dumps(blob), now_iso(), LOCAL_BUSINESS_ID))
+                    db.commit()
 
     return {"received": True}
 
