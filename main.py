@@ -1,5 +1,5 @@
 """
-FOREMAN_BUILD_MARKER: 2026-09-16-email-automation
+FOREMAN_BUILD_MARKER: 2026-09-16-gmail-api-idempotency-fix
 (This line only exists so we can confirm which version is actually live —
 check for it directly on GitHub or via curl before assuming a deploy
 worked. Safe to ignore otherwise.)
@@ -47,9 +47,10 @@ import secrets
 import hashlib
 import os
 import uuid
+import base64
 import urllib.request
 import urllib.error
-import smtplib
+import urllib.parse
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from datetime import datetime, timezone
@@ -72,7 +73,9 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25MB — generous, since this is real dis
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")  # unset = AI features stay off, honestly
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")  # free tier, no credit card — tried first if set
 GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")  # sends the real purchase-delivery email
-GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")  # a Gmail App Password, not your real password
+GMAIL_CLIENT_ID = os.environ.get("GMAIL_CLIENT_ID")  # from a Google Cloud OAuth client, free
+GMAIL_CLIENT_SECRET = os.environ.get("GMAIL_CLIENT_SECRET")
+GMAIL_REFRESH_TOKEN = os.environ.get("GMAIL_REFRESH_TOKEN")  # minted once via OAuth Playground
 ACCESS_CODE = os.environ.get("FOREMAN_ACCESS_CODE")  # unset = local-state mode stays open (fine for genuinely local use)
 
 # DATABASE_URL, if set, points at a real Postgres instance and makes this
@@ -124,6 +127,12 @@ def init_db():
                 state_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            )
+        """)
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS processed_stripe_events (
+                event_id TEXT PRIMARY KEY,
+                processed_at TEXT NOT NULL
             )
         """)
         db.commit()
@@ -532,36 +541,79 @@ def _build_purchase_email_html(name: str, order_id: str, amount: float) -> str:
 </body></html>"""
 
 
+def _gmail_access_token() -> str:
+    """
+    Exchanges the long-lived refresh token for a short-lived access token.
+    Plain HTTPS to oauth2.googleapis.com — not SMTP, so it isn't blocked by
+    Render's free-tier port restrictions.
+    """
+    body = urllib.parse.urlencode({
+        "client_id": GMAIL_CLIENT_ID,
+        "client_secret": GMAIL_CLIENT_SECRET,
+        "refresh_token": GMAIL_REFRESH_TOKEN,
+        "grant_type": "refresh_token",
+    }).encode()
+    request = urllib.request.Request(
+        "https://oauth2.googleapis.com/token",
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="replace")
+        raise RuntimeError(f"Gmail token refresh failed: {detail}")
+    return data["access_token"]
+
+
 def _send_purchase_email(name: str, to_email: str, order_id: str, amount: float):
-    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
-        raise RuntimeError("GMAIL_ADDRESS or GMAIL_APP_PASSWORD not configured on this server.")
+    if not (GMAIL_ADDRESS and GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET and GMAIL_REFRESH_TOKEN):
+        raise RuntimeError("Gmail API credentials not fully configured on this server.")
+
+    access_token = _gmail_access_token()
+
     msg = MIMEMultipart("alternative")
     msg["Subject"] = "Your Foreman license is ready"
     msg["From"] = f"Foreman <{GMAIL_ADDRESS}>"
     msg["To"] = to_email
     msg.attach(MIMEText(_build_purchase_email_html(name, order_id, amount), "html"))
-    with smtplib.SMTP("smtp.gmail.com", 587, timeout=20) as server:
-        server.starttls()
-        server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-        server.sendmail(GMAIL_ADDRESS, [to_email], msg.as_string())
+
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    request = urllib.request.Request(
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+        data=json.dumps({"raw": raw}).encode(),
+        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as resp:
+            json.loads(resp.read())  # confirm it's valid JSON, i.e. a real success response
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="replace")
+        raise RuntimeError(f"Gmail API send failed: {detail}")
 
 
 @app.get("/api/email/status")
 def email_status():
     """
     Same diagnostic pattern as /api/ai/status and /api/stripe/webhook/status —
-    confirms what's actually configured without exposing the real password.
+    confirms what's actually configured without exposing the real secrets.
     """
-    configured = bool(GMAIL_ADDRESS and GMAIL_APP_PASSWORD)
+    configured = bool(GMAIL_ADDRESS and GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET and GMAIL_REFRESH_TOKEN)
     return {
         "configured": configured,
         "gmail_address": GMAIL_ADDRESS if GMAIL_ADDRESS else None,
-        "app_password_length": len(GMAIL_APP_PASSWORD) if GMAIL_APP_PASSWORD else None,
+        "client_id_length": len(GMAIL_CLIENT_ID) if GMAIL_CLIENT_ID else None,
+        "client_secret_length": len(GMAIL_CLIENT_SECRET) if GMAIL_CLIENT_SECRET else None,
+        "refresh_token_length": len(GMAIL_REFRESH_TOKEN) if GMAIL_REFRESH_TOKEN else None,
         "message": (
-            "Ready to send real purchase-delivery emails." if configured
-            else "GMAIL_ADDRESS and/or GMAIL_APP_PASSWORD not set — delivery emails will fail (sales still get recorded either way)."
+            "Ready to send real purchase-delivery emails via the Gmail API." if configured
+            else "Gmail API credentials not fully set — delivery emails will fail (sales still get recorded either way)."
         ),
     }
+
 
 
 def _record_sale(customer_name: str, customer_email: str | None, amount: float, product_name: str, source: str):
@@ -683,6 +735,22 @@ async def stripe_webhook(request: Request):
         raise HTTPException(status_code=400, detail=f"Invalid Stripe signature: {e}")
 
     if event["type"] == "checkout.session.completed":
+        event_id = event["id"]
+        with get_db() as db:
+            already_processed = db.execute(
+                "SELECT 1 FROM processed_stripe_events WHERE event_id = ?", (event_id,)
+            ).fetchone()
+            if already_processed:
+                # Stripe retries a webhook delivery if it doesn't get a fast
+                # response (a slow outbound call, e.g. email, can trigger this).
+                # Without this check, a retry would double-record the same sale.
+                return {"received": True, "duplicate": True}
+            db.execute(
+                "INSERT INTO processed_stripe_events (event_id, processed_at) VALUES (?, ?)",
+                (event_id, now_iso()),
+            )
+            db.commit()
+
         session = event["data"]["object"].to_dict()
         customer_details = session.get("customer_details") or {}
         name = customer_details.get("name") or "Stripe customer"
