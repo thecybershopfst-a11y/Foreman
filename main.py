@@ -1,5 +1,5 @@
 """
-FOREMAN_BUILD_MARKER: 2026-09-15-gemini-3.6-flash-fix
+FOREMAN_BUILD_MARKER: 2026-09-16-email-automation
 (This line only exists so we can confirm which version is actually live —
 check for it directly on GitHub or via curl before assuming a deploy
 worked. Safe to ignore otherwise.)
