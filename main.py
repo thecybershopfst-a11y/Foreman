@@ -1,5 +1,5 @@
 """
-FOREMAN_BUILD_MARKER: 2026-09-16-gmail-api-idempotency-fix
+FOREMAN_BUILD_MARKER: 2026-09-16-gmail-bootstrap-endpoint
 (This line only exists so we can confirm which version is actually live —
 check for it directly on GitHub or via curl before assuming a deploy
 worked. Safe to ignore otherwise.)
@@ -539,6 +539,44 @@ def _build_purchase_email_html(name: str, order_id: str, amount: float) -> str:
 </td></tr>
 </table>
 </body></html>"""
+
+
+@app.get("/api/gmail/bootstrap")
+def gmail_bootstrap(code: str):
+    """
+    One-time-use helper: exchanges a fresh Google authorization code for a
+    refresh token, from this server — not a browser. This sidesteps every
+    browser-side obstacle (Google's token endpoint has no CORS support at
+    all, and a page's own form/script restrictions can block a submission
+    to an external domain) by using the one piece of infrastructure already
+    proven to reach Google over plain HTTPS: this server itself.
+
+    Visit this URL with a fresh ?code=... from the Google consent screen,
+    read the refresh_token in the response, then remove this endpoint —
+    it's a bootstrapping tool, not something that should stay live.
+    """
+    if not (GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET):
+        raise HTTPException(status_code=501, detail="GMAIL_CLIENT_ID/GMAIL_CLIENT_SECRET not configured on this server yet.")
+    body = urllib.parse.urlencode({
+        "code": code,
+        "client_id": GMAIL_CLIENT_ID,
+        "client_secret": GMAIL_CLIENT_SECRET,
+        "redirect_uri": "https://developers.google.com/oauthplayground",
+        "grant_type": "authorization_code",
+    }).encode()
+    request = urllib.request.Request(
+        "https://oauth2.googleapis.com/token",
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode(errors="replace")
+        raise HTTPException(status_code=e.code, detail=f"Google rejected the exchange: {detail}")
+    return data
 
 
 def _gmail_access_token() -> str:
