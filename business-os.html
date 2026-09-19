@@ -291,13 +291,14 @@ async function loadAll(){
 }
 let saveTimer;
 async function saveState(){
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(async ()=>{
-    try{
-      await window.storage.set(CORE_KEY, JSON.stringify(state), false);
-      flashSaved();
-    }catch(e){ console.error("save failed", e); }
-  }, 250);
+  // No debounce: every call site is an explicit user action (a button
+  // click), never live typing — so there's no rapid-fire case to protect
+  // against, and a delay here only creates a window where closing the tab
+  // right after "Save" silently loses the write. Save immediately instead.
+  try{
+    await window.storage.set(CORE_KEY, JSON.stringify(state), false);
+    flashSaved();
+  }catch(e){ console.error("save failed", e); }
 }
 function flashSaved(){
   const el = document.getElementById("saveFlash");
