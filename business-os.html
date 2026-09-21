@@ -213,34 +213,31 @@ Once something is connected, you can act on it for real — check a real balance
 </div>
 
 <script>
-/* ========================= STORAGE POLYFILL (standalone mode) =========================
-   window.storage is provided by Claude.ai when this runs as a Claude artifact.
-   Running this file standalone (served by the Foreman Python backend) has no
-   such API — so if it's missing, this defines a real equivalent backed by the
-   same-origin backend's /api/local-state endpoints. Same get/set(key, shared)
-   shape either way, so nothing else in this file needs to know which mode it's in.
-   IS_STANDALONE is captured here, before the polyfill runs, so other code
-   (like which path AI calls take) can tell the two modes apart later.
+/* ========================= STORAGE (fully standalone) =========================
+   Foreman is a single, self-contained file — no backend, no database to
+   configure, nothing to deploy. Data lives in this browser's own localStorage.
+   That's a deliberate tradeoff, worth being explicit about: it's private to
+   this one browser, on this one device — it won't follow you to a different
+   computer or browser, and clearing site data/history will clear it too.
+   Back up your data regularly using the Export button in Automations.
+   IS_STANDALONE stays around only so the rest of the file can tell whether
+   it's running inside a Claude.ai artifact (window.storage provided) or as
+   a real standalone copy — used for the AI-feature prompts later on.
 */
 const IS_STANDALONE = !window.storage;
 if(!window.storage){
+  const LS_PREFIX = "foreman_";
   window.storage = {
     async get(key){
       try{
-        const res = await fetch("/api/local-state/" + encodeURIComponent(key));
-        if(!res.ok) return null;
-        const data = await res.json();
-        if(data.value === null || data.value === undefined) return null;
-        return {key, value: data.value, shared:false};
+        const value = localStorage.getItem(LS_PREFIX + key);
+        if(value === null) return null;
+        return {key, value, shared:false};
       }catch(e){ return null; }
     },
     async set(key, value){
       try{
-        const res = await fetch("/api/local-state/" + encodeURIComponent(key), {
-          method:"PUT", headers:{"Content-Type":"application/json"},
-          body: JSON.stringify({value})
-        });
-        if(!res.ok) return null;
+        localStorage.setItem(LS_PREFIX + key, value);
         return {key, value, shared:false};
       }catch(e){ return null; }
     }
@@ -274,7 +271,8 @@ function defaultState(){
     bots:{},
     automations:{},
     auditLog:[],
-    supervisorLog:[]
+    supervisorLog:[],
+    lastAutoBackup:""
   };
 }
 function logAudit(action, detail){
@@ -289,21 +287,58 @@ async function loadAll(){
     state = res && res.value ? Object.assign(defaultState(), JSON.parse(res.value)) : defaultState();
   }catch(e){ state = defaultState(); }
 }
+
+/* ========================= AUTOMATIC BACKUP =========================
+   The single biggest real risk in a localStorage-only app: someone clears
+   browser data, switches devices, or just never thinks to hit Export —
+   and years of real business data are gone with no way back. This can't
+   rely on anyone remembering anything. Once a day, the first save of the
+   day writes a real .json file straight to the Downloads folder — the
+   exact same format as the manual Export button, so Import always works
+   on it. It's a real file outside localStorage, so it survives even a
+   full "clear site data."
+*/
+const AUTO_BACKUP_INTERVAL_MS = 24*60*60*1000;
+function hasMeaningfulData(){
+  return !!(state.business.name || state.customers.length || state.invoices.length ||
+    state.pipeline.length || state.finance.transactions.length || state.tasks.length ||
+    state.documents.length || state.inventory.length);
+}
+function maybeAutoBackup(){
+  if(!hasMeaningfulData()) return false; // nothing worth backing up yet on a fresh install
+  const last = state.lastAutoBackup ? new Date(state.lastAutoBackup).getTime() : 0;
+  if(Date.now() - last < AUTO_BACKUP_INTERVAL_MS) return false;
+  const exportObj = {exportedAt: new Date().toISOString(), foremanExportVersion: 1, autoBackup: true, state};
+  const filename = "foreman-autobackup-" + (state.business.name || "business").toLowerCase().replace(/[^a-z0-9]+/g,"-") + "-" + new Date().toISOString().slice(0,10) + ".json";
+  downloadText(filename, JSON.stringify(exportObj, null, 2), "application/json");
+  state.lastAutoBackup = new Date().toISOString();
+  logAudit("Automatic Backup", "Downloaded " + filename);
+  return true;
+}
+
 let saveTimer;
 async function saveState(){
   // No debounce: every call site is an explicit user action (a button
   // click), never live typing — so there's no rapid-fire case to protect
   // against, and a delay here only creates a window where closing the tab
   // right after "Save" silently loses the write. Save immediately instead.
+  //
+  // The auto-backup attempt is deliberately isolated in its own try/catch:
+  // if a browser ever blocks the automatic download for any reason, that
+  // must never take the real data save down with it. The actual save always
+  // happens regardless of whether the backup succeeded.
+  let backedUp = false;
+  try{ backedUp = maybeAutoBackup(); }catch(e){ console.error("auto-backup failed (data save continues regardless)", e); }
   try{
     await window.storage.set(CORE_KEY, JSON.stringify(state), false);
-    flashSaved();
+    flashSaved(backedUp ? "Saved · backed up" : "Saved");
   }catch(e){ console.error("save failed", e); }
 }
-function flashSaved(){
+function flashSaved(msg){
   const el = document.getElementById("saveFlash");
+  el.textContent = msg || "Saved";
   el.classList.add("show");
-  setTimeout(()=>el.classList.remove("show"), 1000);
+  setTimeout(()=>el.classList.remove("show"), msg && msg!=="Saved" ? 2200 : 1000);
 }
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function money(n){ n = Number(n)||0; return (n<0?"-$":"$")+Math.abs(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
@@ -1292,43 +1327,46 @@ function renderTasks(panel){
 }
 
 /* ========================= MARKETING ========================= */
-async function callClaude(prompt){
-  if(IS_STANDALONE){
-    // Standalone mode has no free Claude.ai-provided API access — route through
-    // this server's own proxy, which uses a real Anthropic API key set as an
-    // environment variable on the server (never in this file, never in the repo).
-    const response = await fetch("/api/ai/generate", {
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({prompt})
-    });
-    if(!response.ok){
-      const err = await response.json().catch(()=>({detail:"Unknown error"}));
-      throw new Error(err.detail || ("API error " + response.status));
+// Foreman has no backend and no API key of its own — every AI-drafted
+// feature (Marketing, Documents, the Supervisor) works by building a real
+// prompt, letting you copy it into your own Claude account, and saving
+// whatever you paste back. Nothing is ever generated inside this file
+// itself; this is the one shared UI for that copy/paste exchange.
+function renderPromptExchange(container, prompt, onSaveResponse, opts){
+  opts = opts || {};
+  container.innerHTML = `
+    <div class="prompt-exchange">
+      <p class="hint" style="color:var(--text-dim);font-size:.85rem;margin-bottom:10px;">Copy this prompt into your own Claude account (claude.ai, the app, or Claude Code), then paste Claude's reply below.</p>
+      <textarea readonly class="prompt-box" style="width:100%;min-height:90px;font-family:inherit;font-size:.85rem;padding:10px;border:1px solid var(--line);border-radius:6px;background:#FAFAF8;margin-bottom:8px;">${escapeHtml(prompt)}</textarea>
+      <button type="button" class="btn ghost small copy-prompt-btn">Copy prompt</button>
+      <div class="copy-confirm" style="display:none;color:var(--teal, #1F6E5C);font-size:.8rem;margin-top:6px;">Copied.</div>
+      <label style="display:block;margin-top:16px;font-weight:600;font-size:.85rem;">Paste Claude's reply here</label>
+      <textarea class="response-box" placeholder="Paste the response you got from Claude..." style="width:100%;min-height:110px;font-family:inherit;font-size:.9rem;padding:10px;border:1px solid var(--line);border-radius:6px;margin:6px 0 10px;"></textarea>
+      <button type="button" class="btn primary save-response-btn">${opts.saveLabel || "Save"}</button>
+    </div>
+  `;
+  container.querySelector(".copy-prompt-btn").onclick = async ()=>{
+    try{
+      await navigator.clipboard.writeText(prompt);
+      const c = container.querySelector(".copy-confirm");
+      c.style.display = "block";
+      setTimeout(()=>{ c.style.display = "none"; }, 2000);
+    }catch(e){
+      container.querySelector(".prompt-box").select();
     }
-    const data = await response.json();
-    return data.text || "";
-  }
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({
-      model:"claude-sonnet-4-6",
-      max_tokens:400,
-      messages:[{role:"user", content: prompt}]
-    })
-  });
-  if(!response.ok) throw new Error("API error "+response.status);
-  const data = await response.json();
-  const textBlock = (data.content||[]).find(b=>b.type==="text");
-  return textBlock ? textBlock.text : "";
+  };
+  container.querySelector(".save-response-btn").onclick = ()=>{
+    const resp = container.querySelector(".response-box").value.trim();
+    if(!resp) return;
+    onSaveResponse(resp);
+  };
 }
 
 function renderMarketing(panel){
   const list = [...state.content].sort((a,b)=>(b.date||"").localeCompare(a.date||""));
   panel.innerHTML = `
     <h2 class="title">Marketing${botTag("marketing")}</h2>
-    <p class="sub">Draft platform-specific content. Drafts are generated live and use your Brand Setup for tone — nothing is posted anywhere; you copy what you want to use.</p>
+    <p class="sub">Build a prompt for a platform-specific post, using your Brand Setup for tone. Paste back what your own Claude account writes — nothing is posted anywhere automatically.</p>
     <form class="inline-form" id="contentForm">
       <div class="row" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
         <div class="field"><label>Platform</label>
@@ -1337,9 +1375,9 @@ function renderMarketing(panel){
         <div class="field"><label>Topic</label><input id="m_topic" placeholder="e.g. same-day delivery reminder" required></div>
         <div class="field"><label>Tone (optional override)</label><input id="m_tone" placeholder="${state.brand.voice ? escapeHtml(state.brand.voice) : 'e.g. friendly, upbeat'}"></div>
       </div>
-      <div><button class="btn primary" type="submit" id="genBtn">Generate draft</button></div>
-      <div id="genStatus" class="ai-loading"></div>
+      <div><button class="btn primary" type="submit" id="genBtn">Build prompt</button></div>
     </form>
+    <div id="genExchange"></div>
     <div id="contentList">
       ${list.length ? list.map(c=>`
         <div class="content-item">
@@ -1352,30 +1390,22 @@ function renderMarketing(panel){
       `).join("") : `<div class="empty">No content drafted yet.</div>`}
     </div>
   `;
-  document.getElementById("contentForm").onsubmit = async (e)=>{
+  document.getElementById("contentForm").onsubmit = (e)=>{
     e.preventDefault();
     const topic = val("m_topic");
     if(!topic) return;
     const platform = document.getElementById("m_platform").value;
     const tone = val("m_tone") || state.brand.voice || "clear and friendly";
-    const genBtn = document.getElementById("genBtn");
-    const status = document.getElementById("genStatus");
-    genBtn.disabled = true;
-    status.textContent = "Generating draft...";
-    try{
-      const brandContext = state.business.name ? `The business is "${state.business.name}"${state.business.industry?`, a ${state.business.industry} business`:""}${state.business.location?` in ${state.business.location}`:""}. ` : "";
-      const mBot = botName("marketing");
-      const persona = mBot ? `You are ${mBot}, this business's marketing assistant. ` : "";
-      const prompt = `${persona}${brandContext}Write one ${platform} post about: ${topic}. Tone: ${tone}. Keep it appropriately short for the platform. Output only the post text, no preamble, no quotation marks around it.`;
-      const text = await callClaude(prompt);
+    const brandContext = state.business.name ? `The business is "${state.business.name}"${state.business.industry?`, a ${state.business.industry} business`:""}${state.business.location?` in ${state.business.location}`:""}. ` : "";
+    const mBot = botName("marketing");
+    const persona = mBot ? `You are ${mBot}, this business's marketing assistant. ` : "";
+    const prompt = `${persona}${brandContext}Write one ${platform} post about: ${topic}. Tone: ${tone}. Keep it appropriately short for the platform. Output only the post text, no preamble, no quotation marks around it.`;
+    renderPromptExchange(document.getElementById("genExchange"), prompt, (text)=>{
       state.content.push({id:uid(), platform, date:new Date().toISOString().slice(0,10), text: text.trim(), status:"Draft", topic, tone, bot: mBot||undefined});
       logAudit("Marketing", `${mBot?mBot+" drafted":"Drafted"} ${platform} post: ${topic}`);
       saveState();
       renderMarketing(panel);
-    }catch(err){
-      status.textContent = err.message || "Couldn't generate a draft — try again.";
-      genBtn.disabled = false;
-    }
+    }, {saveLabel:"Save this draft"});
   };
   panel.querySelectorAll("[data-del]").forEach(b=>{
     b.onclick = ()=>{ state.content = state.content.filter(c=>c.id!==b.dataset.del); logAudit("Marketing", "Removed a content draft"); saveState(); renderMarketing(panel); };
@@ -1996,8 +2026,7 @@ function renderDocuments(panel){
         </div>
       </div>
       <div class="field"><label>Specifics (what makes this document yours)</label><textarea id="gd_specifics" placeholder="e.g. 2-day delivery window, $10 late fee after 5 days, service area is Berwick and Aylesford"></textarea></div>
-      <div><button class="btn primary" type="submit" id="gdBtn">Generate draft</button></div>
-      <div id="gdStatus" class="ai-loading"></div>
+      <div><button class="btn primary" type="submit" id="gdBtn">Build prompt</button></div>
     </form>
     <div id="gdResult"></div>
 
@@ -2036,24 +2065,18 @@ function renderDocuments(panel){
       </tbody>
     </table>
   `;
-  document.getElementById("genDocForm").onsubmit = async (e)=>{
+  document.getElementById("genDocForm").onsubmit = (e)=>{
     e.preventDefault();
     const typeId = document.getElementById("gd_type").value;
     const tmpl = DOC_TEMPLATES.find(t=>t.id===typeId);
     const dept = document.getElementById("gd_dept").value;
     const specifics = val("gd_specifics");
-    const btn = document.getElementById("gdBtn");
-    const status = document.getElementById("gdStatus");
-    btn.disabled = true;
-    status.textContent = "Drafting...";
-    try{
-      const bot = botName(dept) || DEPARTMENTS.find(d=>d.id===dept).label;
-      const brandContext = state.business.name ? `The business is "${state.business.name}"${state.business.industry?`, a ${state.business.industry} business`:""}${state.business.location?` in ${state.business.location}`:""}. ` : "";
-      const docLabel = tmpl.id==="custom" ? (specifics || "a business document") : tmpl.label;
-      const prompt = `You are ${bot}, drafting a ${docLabel} for this business. ${brandContext}${state.brand.voice?`Tone/voice: ${state.brand.voice}. `:""}Specifics to include: ${specifics || "none given — use reasonable placeholders in [brackets] where specific info is needed"}. Write the actual document content, ready to review and adapt. Do not include a legal disclaimer yourself — that will be added separately. Output only the document text.`;
-      const text = await callClaude(prompt);
+    const bot = botName(dept) || DEPARTMENTS.find(d=>d.id===dept).label;
+    const brandContext = state.business.name ? `The business is "${state.business.name}"${state.business.industry?`, a ${state.business.industry} business`:""}${state.business.location?` in ${state.business.location}`:""}. ` : "";
+    const docLabel = tmpl.id==="custom" ? (specifics || "a business document") : tmpl.label;
+    const prompt = `You are ${bot}, drafting a ${docLabel} for this business. ${brandContext}${state.brand.voice?`Tone/voice: ${state.brand.voice}. `:""}Specifics to include: ${specifics || "none given — use reasonable placeholders in [brackets] where specific info is needed"}. Write the actual document content, ready to review and adapt. Do not include a legal disclaimer yourself — that will be added separately. Output only the document text.`;
+    renderPromptExchange(document.getElementById("gdResult"), prompt, (text)=>{
       const fullText = text.trim() + "\n\n---\n" + DOC_DISCLAIMER;
-      window._lastGenDoc = {typeId, tmplLabel: tmpl.label, dept, bot, text: fullText};
       document.getElementById("gdResult").innerHTML = `
         <div class="content-item">
           <div class="meta"><span class="badge">${tmpl.label}</span><span>Drafted by ${escapeHtml(bot)}</span></div>
@@ -2064,10 +2087,6 @@ function renderDocuments(panel){
           </div>
         </div>
       `;
-      logAudit("Documents", `${bot} drafted a ${tmpl.label}`);
-      saveState();
-      status.textContent = "";
-      btn.disabled = false;
       document.getElementById("gdSave").onclick = ()=>{
         const finalText = document.getElementById("gdText").value;
         state.documents.push({id:uid(), name:tmpl.label, category:tmpl.category, expiry:"", notes:"AI-drafted — review before use", content:finalText, bot});
@@ -2080,10 +2099,7 @@ function renderDocuments(panel){
         logAudit("Documents", `Downloaded generated document: ${tmpl.label}`);
         saveState();
       };
-    }catch(err){
-      status.textContent = err.message || "Couldn't generate a draft — try again.";
-      btn.disabled = false;
-    }
+    }, {saveLabel:"Use this draft"});
   };
   const MAX_INLINE_FILE_BYTES = 350000;
   const docFileInput = document.getElementById("doc_file");
@@ -2484,9 +2500,9 @@ function renderSupervisor(panel){
         </div>
         <div class="field"><label>Question / decision needed</label><input id="sup_question" required placeholder="e.g. Should we discount this stalled deal to close it?"></div>
       </div>
-      <div><button class="btn primary" type="submit" id="supAskBtn">Ask ${escapeHtml(supName)}</button></div>
-      <div id="supStatus" class="ai-loading"></div>
+      <div><button class="btn primary" type="submit" id="supAskBtn">Build prompt for ${escapeHtml(supName)}</button></div>
     </form>
+    <div id="supExchange"></div>
     <div id="supLog">
       ${log.length ? log.map(l=>{
         const dept = DEPARTMENTS.find(d=>d.id===l.dept);
@@ -2506,26 +2522,18 @@ function renderSupervisor(panel){
     document.getElementById("sup_question").value = supervisorPrefill.question;
     supervisorPrefill = null;
   }
-  document.getElementById("supForm").onsubmit = async (e)=>{
+  document.getElementById("supForm").onsubmit = (e)=>{
     e.preventDefault();
     const question = val("sup_question");
     if(!question) return;
     const dept = document.getElementById("sup_dept").value;
-    const btn = document.getElementById("supAskBtn");
-    const status = document.getElementById("supStatus");
-    btn.disabled = true;
-    status.textContent = "Thinking it through...";
-    try{
-      const prompt = buildSupervisorPrompt(dept, question);
-      const answer = await callClaude(prompt);
+    const prompt = buildSupervisorPrompt(dept, question);
+    renderPromptExchange(document.getElementById("supExchange"), prompt, (answer)=>{
       state.supervisorLog.unshift({id:uid(), dept, question, answer: answer.trim(), ts:new Date().toISOString(), taskCreated:false});
       logAudit("Supervisor", `${DEPARTMENTS.find(d=>d.id===dept).label} asked: ${question}`);
       saveState();
       renderSupervisor(panel);
-    }catch(err){
-      status.textContent = err.message || "Couldn't reach the Supervisor — try again.";
-      btn.disabled = false;
-    }
+    }, {saveLabel:"Save this answer"});
   };
   panel.querySelectorAll("[data-mktask]").forEach(b=>{
     b.onclick = ()=>{
@@ -2572,12 +2580,19 @@ function renderAuditLog(panel){
 // failure messages, no pretending a connection exists when it doesn't.
 function renderBackendSync(panel){
   const cfg = state.backendConfig;
+  const lastAuto = state.lastAutoBackup ? new Date(state.lastAutoBackup).toLocaleString() : null;
   panel.innerHTML = `
     <h2 class="title">Data & Backend</h2>
     <p class="sub">Export or import everything in Foreman as one file — works right here on your phone, no backend needed. Backend Sync below is separate and optional.</p>
 
+    <div style="background:var(--panel-alt, #F7F5F1);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:22px;">
+      <div style="font-weight:700;font-size:.85rem;margin-bottom:4px;">Automatic backup — on by default</div>
+      <p class="sub" style="margin:0;">Once a day, the first save downloads a real backup file to your device on its own — the same format as the button below. This protects against clearing browser data, not just forgetting to click Export.</p>
+      <p class="sub" style="margin:8px 0 0;">${lastAuto ? "Last automatic backup: " + lastAuto : "No automatic backup yet — it fires on your first save once there's real data to protect."}</p>
+    </div>
+
     <h3 style="font-size:.9rem;margin-bottom:10px;">Export & import your data</h3>
-    <p class="sub" style="margin-bottom:12px;">Export downloads your entire business — every module — as one JSON file. Bring that file to the Python backend later (drop it next to <code>main.py</code> as <code>import-state.json</code>) and it seeds the real program with what you built here.</p>
+    <p class="sub" style="margin-bottom:12px;">Export downloads your entire business — every module — as one JSON file, any time you want a backup on demand. Import brings a previously exported (or auto-backed-up) file straight back in, on this device or any other copy of Foreman.</p>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
       <button class="btn primary" id="exportAllBtn">Export all data (.json)</button>
       <label class="btn ghost small" style="cursor:pointer;">Import data (.json)<input type="file" id="importAllFile" accept="application/json" style="display:none;"></label>

@@ -205,7 +205,7 @@
           <li>Click around freely — nothing you do here is saved</li>
           <li>No account, no signup, just open it</li>
         </ul>
-        <a href="https://foreman-egqa.onrender.com/demo" class="btn btn-primary">Open the live demo →</a>
+        <a href="https://thecybershopfst-a11y.github.io/Foreman/foreman-demo.html" class="btn btn-primary">Open the live demo →</a>
       </div>
       <div class="demo-mock">
         <div class="bar"><i></i><i></i><i></i></div>
@@ -254,7 +254,8 @@
          equivalent Product/Price/Payment Link/Webhook in live mode and swap
          this URL for the real one. -->
     <a href="https://buy.stripe.com/test_eVq5kDcFC2Bb7skcEhak000" class="btn btn-primary" style="font-size:1.05rem; padding:16px 34px;">Buy Foreman — $299 CAD →</a>
-    <p style="font-size:.8rem; color:var(--text-dim); margin-top:16px;">Questions first? <a href="#contact" style="color:var(--amber-deep);">Send a message</a> instead.</p>
+    <p style="font-size:.85rem; color:var(--text-dim); margin-top:18px; max-width:480px; margin-left:auto; margin-right:auto;">You'll get one file by email, ready to open. No server, no hosting account, no setup — just save it and go. Your data stays in your own browser, on your own device.</p>
+    <p style="font-size:.8rem; color:var(--text-dim); margin-top:10px;">Questions first? <a href="#contact" style="color:var(--amber-deep);">Send a message</a> instead.</p>
   </div>
 </section>
 
@@ -263,7 +264,7 @@
     <div class="section-head">
       <div class="kicker">Contact</div>
       <h2>Questions, or ready to buy?</h2>
-      <p class="section-lead">Send a message below — nothing is emailed automatically, so replies happen on our schedule, but every message is received and reviewed.</p>
+      <p class="section-lead">Send a message below — it opens your own email app with everything filled in, addressed straight to us.</p>
     </div>
     <div class="contact-grid">
       <div class="contact-info-card">
@@ -286,33 +287,18 @@
 </section>
 
 <script>
-  document.getElementById("contactForm").addEventListener("submit", async function(e){
+  document.getElementById("contactForm").addEventListener("submit", function(e){
     e.preventDefault();
+    const name = document.getElementById("cf_name").value;
+    const email = document.getElementById("cf_email").value;
+    const message = document.getElementById("cf_message").value;
+    const subject = "Foreman inquiry from " + name;
+    const body = message + "\n\n— " + name + " (" + email + ")";
+    const mailto = "mailto:thecybershop.fst@gmail.com?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
+    window.location.href = mailto;
     const status = document.getElementById("formStatus");
-    const btn = e.target.querySelector("button");
-    btn.disabled = true;
-    status.textContent = "Sending...";
-    status.style.color = "var(--text-dim)";
-    try{
-      const res = await fetch("https://foreman-egqa.onrender.com/api/contact", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          name: document.getElementById("cf_name").value,
-          email: document.getElementById("cf_email").value,
-          message: document.getElementById("cf_message").value
-        })
-      });
-      if(!res.ok) throw new Error("Server responded with " + res.status);
-      status.textContent = "Message sent — thanks, we'll be in touch.";
-      status.style.color = "var(--teal)";
-      e.target.reset();
-    }catch(err){
-      status.textContent = "Couldn't send that — please try again, or call " + "902-321-1375" + ".";
-      status.style.color = "#B23B27";
-    }finally{
-      btn.disabled = false;
-    }
+    status.textContent = "Opening your email app — send it from there to reach us.";
+    status.style.color = "var(--teal)";
   });
 </script>
 
@@ -327,7 +313,7 @@
 <footer>
   <div class="container">
     <div>© 2026 Foreman. All rights reserved.</div>
-    <div><a href="https://foreman-egqa.onrender.com/demo">Live demo</a></div>
+    <div><a href="https://thecybershopfst-a11y.github.io/Foreman/foreman-demo.html">Live demo</a></div>
   </div>
 </footer>
 
