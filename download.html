@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Download Foreman</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#0D1015; --paper:#F3EEE2; --paper-panel:#FFFEF9; --paper-line:#DCD2B8;
+  --brass:#AD7A2E; --brass-dim:#F1E4CC; --brass-deep:#8F6524;
+  --teal:#1F6E5C; --teal-dim:#D9EAE5;
+  --text-dim-paper:#6B6355;
+  --serif:"Archivo",-apple-system,sans-serif;
+  --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box; margin:0; padding:0;}
+body{background:var(--paper); color:var(--ink); font-family:var(--sans); line-height:1.55; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px;}
+.card{background:var(--paper-panel); border:1px solid var(--paper-line); border-radius:12px; max-width:480px; width:100%; padding:40px 36px; text-align:center;}
+h1{font-family:var(--serif); font-size:1.5rem; margin-bottom:10px;}
+p{color:var(--text-dim-paper); font-size:.95rem; margin-bottom:26px;}
+.btn{display:inline-flex; align-items:center; gap:9px; padding:14px 28px; border-radius:6px; font-weight:700; font-size:1rem; text-decoration:none; border:none; cursor:pointer; font-family:var(--sans); background:var(--brass); color:#fff; transition:background .15s;}
+.btn:hover{background:var(--brass-deep);}
+.btn:disabled{opacity:.6; cursor:default;}
+.status{margin-top:16px; font-size:.85rem; color:var(--text-dim-paper); min-height:1.2em;}
+.status.ok{color:var(--teal);}
+.status.err{color:#B23B27;}
+.note{margin-top:28px; padding-top:20px; border-top:1px solid var(--paper-line); font-size:.8rem; color:var(--text-dim-paper);}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Your Foreman file</h1>
+  <p>Downloading <strong>business-os.html</strong> — save it somewhere permanent, then open it in any browser.</p>
+  <button class="btn" id="dl">Download business-os.html</button>
+  <div class="status" id="status"></div>
+  <div class="note">If the download doesn't start, use the button above — this page always fetches the current file directly from the source.</div>
+</div>
+<script>
+const SOURCE_URL = 'https://raw.githubusercontent.com/thecybershopfst-a11y/Foreman/main/business-os.html';
+const btn = document.getElementById('dl');
+const status = document.getElementById('status');
+
+async function doDownload(auto) {
+  btn.disabled = true;
+  status.className = 'status';
+  status.textContent = auto ? 'Preparing your download…' : 'Downloading…';
+  try {
+    const res = await fetch(SOURCE_URL, { cache: 'no-store' });
+    if (!res.ok) throw new Error('Server returned ' + res.status);
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'business-os.html';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    status.className = 'status ok';
+    status.textContent = 'Download started — check your Downloads folder.';
+  } catch (err) {
+    status.className = 'status err';
+    status.textContent = "Couldn't start the download automatically. Please click the button, or contact us if this keeps happening.";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+btn.addEventListener('click', () => doDownload(false));
+// Try once automatically when the page loads.
+doDownload(true);
+</script>
+</body>
+</html>
