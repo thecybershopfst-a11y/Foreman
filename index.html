@@ -263,7 +263,7 @@
     <a href="https://buy.stripe.com/aFadR96e5fRsdfG0dy2Ry00" class="btn btn-primary" style="font-size:1.05rem; padding:16px 34px;">Buy Foreman — $99 CAD →</a>
     <p style="font-size:.8rem; color:var(--text-dim); margin-top:12px;">Introductory price through November 21, 2026 — then $199 for new customers. Buy now, keep $99 for good.</p>
     <p style="font-size:.85rem; color:var(--text-dim); margin-top:18px; max-width:480px; margin-left:auto; margin-right:auto;">You'll get one file by email, ready to open. No server, no hosting account, no setup — just save it and go. Your data stays in your own browser, on your own device.</p>
-    <p style="font-size:.8rem; color:var(--text-dim); margin-top:10px;">Questions first? <a href="#contact" style="color:var(--amber-deep);">Send a message</a> instead.</p>
+    <p style="font-size:.8rem; color:var(--text-dim); margin-top:10px;">Questions first? <a href="#contact" style="color:var(--amber-deep);">Contact us</a> instead.</p>
   </div>
 </section>
 
@@ -294,7 +294,7 @@
   </div>
 </section>
 
-<<section id="contact">
+<section id="contact">
   <div class="container" style="max-width:520px; text-align:center;">
     <div class="section-head" style="margin-left:auto; margin-right:auto; text-align:center;">
       <div class="kicker">Contact</div>
@@ -306,23 +306,7 @@
       <div class="cval"><a href="mailto:roger@foreman-os.ca">roger@foreman-os.ca</a></div>
     </div>
   </div>
-</section>>
-
-<script>
-  document.getElementById("contactForm").addEventListener("submit", function(e){
-    e.preventDefault();
-    const name = document.getElementById("cf_name").value;
-    const email = document.getElementById("cf_email").value;
-    const message = document.getElementById("cf_message").value;
-    const subject = "Foreman inquiry from " + name;
-    const body = message + "\n\n— " + name + " (" + email + ")";
-    const mailto = "mailto:roger@foreman-os.ca?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
-    window.location.href = mailto;
-    const status = document.getElementById("formStatus");
-    status.textContent = "Opening your email app — send it from there to reach us.";
-    status.style.color = "var(--teal)";
-  });
-</script>
+</section>
 
 <section class="final-cta">
   <div class="container">
