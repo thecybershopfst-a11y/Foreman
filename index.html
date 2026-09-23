@@ -27,9 +27,8 @@
 
   nav.topnav{position:sticky; top:0; z-index:100; background:rgba(13,16,21,0.96); backdrop-filter:blur(8px); border-bottom:1px solid #232C38;}
   nav.topnav .container{display:flex; align-items:center; justify-content:space-between; min-height:68px; flex-wrap:wrap; gap:10px 0; padding-top:8px; padding-bottom:8px;}
-  .navlogo{font-family:var(--serif); font-weight:800; font-size:1.3rem; color:#fff; letter-spacing:-.01em; white-space:nowrap;}
-  .nav-byline{font-weight:500; font-size:.62em; color:#8E97A1; letter-spacing:.01em;}
-  @media (max-width:600px){ .nav-byline{display:none;} }
+  .navlogo{display:block; height:36px; width:auto;}
+  @media (max-width:480px){ .navlogo{height:30px;} }
   .navlinks{display:flex; gap:28px; align-items:center;}
   .navlinks a{color:#AEB7C0; font-size:.9rem; font-weight:500; text-decoration:none;}
   .navlinks a:hover{color:#fff;}
@@ -124,7 +123,7 @@
 
 <nav class="topnav">
   <div class="container">
-    <div class="navlogo">Foreman OS <span class="nav-byline">by Roger Flynn</span></div>
+    <img src="nav-logo.png" alt="Foreman OS, by Roger Flynn" class="navlogo">
     <div class="navlinks">
       <a href="#features">Product</a>
       <a href="#demo">Demo</a>
