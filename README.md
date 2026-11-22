@@ -20,7 +20,7 @@ The Marketing, Documents, and Supervisor features work by generating a ready-to-
 ## How it's sold
 
 - **Checkout:** a live Stripe Payment Link (not embedded in this repo — see your Stripe dashboard)
-- **Price:** $99 CAD introductory, rising to $199 for new customers after the introductory period ends; anyone who buys at $99 keeps that price permanently
+- **Price:** $199 CAD for new customers (raised 2026-11-22 from the $99 CAD introductory price, which ran 2026-09-22 to 2026-11-21); anyone who bought at $99 keeps that price permanently
 - **Fulfillment is manual:** after a sale comes through on Stripe, send the customer an email with a link to `download.html` — that page pulls the current `business-os.html` and forces a real download
 - **Demo:** `foreman-demo.html` is public and needs no purchase — linked from the sales page for anyone to try first
 
