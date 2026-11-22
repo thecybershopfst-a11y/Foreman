@@ -315,6 +315,13 @@ function hasMeaningfulData(){
     state.documents.length || state.inventory.length);
 }
 function maybeAutoBackup(){
+  // This is the public, no-signup DEMO — it's pre-loaded with sample data
+  // (Tidewater Coffee Roasters) that nobody needs a real backup of, and a
+  // visitor clicking around shouldn't get an unexpected file-download
+  // prompt from their browser. The real product (business-os.html) keeps
+  // the actual auto-backup behavior for real customer data; this is the
+  // demo-only override that disables it here.
+  return false;
   if(!hasMeaningfulData()) return false; // nothing worth backing up yet on a fresh install
   const last = state.lastAutoBackup ? new Date(state.lastAutoBackup).getTime() : 0;
   if(Date.now() - last < AUTO_BACKUP_INTERVAL_MS) return false;
